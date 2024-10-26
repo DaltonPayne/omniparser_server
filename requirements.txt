@@ -1,7 +1,6 @@
 torch
 torchvision
 transformers
-ultralytics
 Pillow
 opencv-python
 easyocr
