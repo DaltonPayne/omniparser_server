@@ -20,7 +20,7 @@ def initialize_models():
         logging.info("Initializing models...")
         
         # Check for CUDA device
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = 'cuda' # if torch.cuda.is_available() else 'cpu'
         logging.info(f"Device set to: {device}")
         
         # Initialize SOM YOLO model
