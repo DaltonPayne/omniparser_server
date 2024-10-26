@@ -39,12 +39,13 @@ RUN pip install --no-cache-dir \
 # Download and cache the YOLO model
 # Note: Assuming the model weights are included in the repository
 # If not, you would need to download them here
-RUN python -c "from ultralytics import YOLO; \
-    import torch; \
-    if not torch.cuda.is_available(): \
-        print('CUDA not available'); \
-    else: \
-        print(f'CUDA available: {torch.cuda.get_device_name(0)}')"
+# Check CUDA availability and display GPU name if available
+RUN python -c "from ultralytics import YOLO; import torch; \
+if not torch.cuda.is_available(): \
+    print('CUDA not available'); \
+else: \
+    print(f'CUDA available: {torch.cuda.get_device_name(0)}')"
+
 
 # Pre-download and cache Florence2 model
 # Note: Replace with actual model initialization code if needed
