@@ -2,10 +2,12 @@
 FROM pytorch/pytorch:2.0.0-cuda11.7-cudnn8-runtime
 
 # Set the working directory
-WORKDIR /app
+WORKDIR /omniparser_server
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
+    python3-pip \
+    python3 \
     libgl1-mesa-glx \
     libglib2.0-0 \
     libsm6 \
@@ -13,51 +15,26 @@ RUN apt-get update && apt-get install -y \
     libxrender-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Increase file descriptor limit
-RUN ulimit -n 65536
+# Upgrade pip
+RUN python3 -m pip install --upgrade pip
 
-# Copy the application code and model weights
-COPY . /app
-
-# Create directories for models if they don't exist
-RUN mkdir -p /app/icon_detect /app/weights
+# Copy requirements first to leverage Docker cache
+COPY requirements.txt /omniparser_server/
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Install additional required packages
-RUN pip install --no-cache-dir \
-    ultralytics \
-    easyocr \
-    transformers \
-    pillow \
-    matplotlib \
-    runpod \
-    torch \
-    torchvision
+# Copy the rest of the application
+COPY . /omniparser_server/
 
-# Download and cache the YOLO model
-# Note: Assuming the model weights are included in the repository
-# If not, you would need to download them here
-RUN python -c "from ultralytics import YOLO; \
-    import torch; \
-    if not torch.cuda.is_available(): \
-        print('CUDA not available'); \
-    else: \
-        print(f'CUDA available: {torch.cuda.get_device_name(0)}')"
+# Create directories for models if they don't exist
+RUN mkdir -p /omniparser_server/icon_detect /omniparser_server/weights
 
-# Pre-download and cache Florence2 model
-# Note: Replace with actual model initialization code if needed
-RUN python -c "from utils import get_caption_model_processor; \
-    try: \
-        processor = get_caption_model_processor( \
-            model_name='florence2', \
-            model_name_or_path='../icon_caption_florence', \
-            device='cuda' \
-        ); \
-        print('Florence2 model loaded successfully') \
-    except Exception as e: \
-        print(f'Error loading Florence2 model: {e}')"
+# Check CUDA availability (fixed syntax)
+RUN python3 -c 'import torch; print(f"CUDA available: {torch.cuda.is_available()}")'
+
+# Try to import and verify YOLO (in separate command)
+RUN python3 -c 'from ultralytics import YOLO; print("YOLO imported successfully")'
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -72,4 +49,4 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
 # Run the handler
-CMD ["python", "handler.py"]
+CMD ["python3", "handler.py"]
