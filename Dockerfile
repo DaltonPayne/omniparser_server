@@ -26,11 +26,16 @@ RUN apt-get update && apt-get install -y \
 RUN python3 -m pip install --upgrade pip \
     && pip3 install --no-cache-dir \
     torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu117 \
-    ultralytics
+    ultralytics \
+    runpod>=0.9.0
 
 # Copy requirements and install remaining dependencies
 COPY requirements.txt /omniparser_server/
 RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Create log directory and set permissions
+RUN mkdir -p /var/log/runpod && \
+    chmod 777 /var/log/runpod
 
 # Copy the application
 COPY . /omniparser_server/
@@ -52,6 +57,8 @@ ENV PORT=8080
 ENV PYTHONPATH="${PYTHONPATH}:/omniparser_server"
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV LOG_LEVEL=INFO
+ENV RUNPOD_DEBUG_MODE=1
 
 # Make port available
 EXPOSE 8080
@@ -60,5 +67,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# Run the handler
-CMD ["python3", "handler.py"]
+# Run the handler with logging
+CMD ["sh", "-c", "python3 handler.py 2>&1 | tee -a /var/log/runpod/worker.log"]
