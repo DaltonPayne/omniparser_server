@@ -4,7 +4,7 @@ FROM pytorch/pytorch:2.0.0-cuda11.7-cudnn8-runtime
 # Set the working directory
 WORKDIR /omniparser_server
 
-# Set system limits
+# Set system limits for better performance
 RUN echo "fs.file-max = 65535" >> /etc/sysctl.conf \
     && echo "* soft nofile 65535" >> /etc/security/limits.conf \
     && echo "* hard nofile 65535" >> /etc/security/limits.conf
@@ -19,18 +19,23 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender-dev \
     curl \
+    nvidia-cuda-toolkit \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip and install essential packages first
+# Upgrade pip and install essential packages with CUDA support
 RUN python3 -m pip install --upgrade pip \
     && pip3 install --no-cache-dir \
-    torch \
-    torchvision \
-    ultralytics
+    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu117 \
+    ultralytics \
+    runpod>=0.9.0
 
 # Copy requirements and install remaining dependencies
 COPY requirements.txt /omniparser_server/
 RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Create log directory and set permissions
+RUN mkdir -p /var/log/runpod && \
+    chmod 777 /var/log/runpod
 
 # Copy the application
 COPY . /omniparser_server/
@@ -38,14 +43,22 @@ COPY . /omniparser_server/
 # Create directories for models
 RUN mkdir -p /omniparser_server/icon_detect /omniparser_server/weights
 
-# Verify installations (without YOLO import check)
-RUN python3 -c 'import torch; print(f"PyTorch version: {torch.__version__}"); print(f"CUDA available: {torch.cuda.is_available()}")'
+# Verify CUDA installation and PyTorch setup
+RUN python3 -c 'import torch; print(f"PyTorch version: {torch.__version__}"); \
+    print(f"CUDA available: {torch.cuda.is_available()}"); \
+    print(f"CUDA version: {torch.version.cuda}"); \
+    if torch.cuda.is_available(): \
+        print(f"GPU Device: {torch.cuda.get_device_name(0)}")'
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV CUDA_VISIBLE_DEVICES=0
 ENV PORT=8080
 ENV PYTHONPATH="${PYTHONPATH}:/omniparser_server"
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV LOG_LEVEL=INFO
+ENV RUNPOD_DEBUG_MODE=1
 
 # Make port available
 EXPOSE 8080
@@ -54,5 +67,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# Run the handler
-CMD ["python3", "handler.py"]
+# Run the handler with logging
+CMD ["sh", "-c", "python3 handler.py 2>&1 | tee -a /var/log/runpod/worker.log"]
