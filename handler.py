@@ -5,7 +5,7 @@ from ultralytics import YOLO
 import base64
 import io
 import logging
-from utils import get_som_labeled_img, check_ocr_box, get_caption_model_processor
+from utils import get_som_labeled_img, check_ocr_box, get_caption_model_processor, get_yolo_model
 
 # Top-level diagnostic print statement
 print("Starting Runpod serverless endpoint...")
@@ -25,7 +25,7 @@ def initialize_models():
         
         # Initialize SOM YOLO model
         logging.info("Loading SOM YOLO model...")
-        som_model = get_yolo_model(model_path='icon_detect/best.pt')
+        som_model = get_yolo_model(model_path='icon_caption_blip2/icon_detect/best.pt')
         som_model.to(device)
         logging.info("SOM YOLO model loaded and moved to device.")
         
