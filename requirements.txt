@@ -1,19 +1,22 @@
+# Serverless and endpoint libraries
+runpod
+
+# Machine learning and computer vision libraries
 torch
 torchvision
-transformers
-Pillow
-opencv-python
+ultralytics
 easyocr
-runpod
+opencv-python-headless
 numpy
+supervision
+
+# Image processing and drawing
+Pillow
 matplotlib
-python-dotenv
+
+# Utility libraries
 requests
-fastapi
-uvicorn
-shapely
-pyyaml
-pandas
-tqdm
-accelerate
-scikit-learn
+openai
+
+# Typing and miscellaneous utilities
+base64io
