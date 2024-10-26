@@ -7,35 +7,52 @@ import io
 import logging
 from utils import get_som_labeled_img, check_ocr_box, get_caption_model_processor
 
+# Top-level diagnostic print statement
+print("Starting Runpod serverless endpoint...")
+
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.info("Logging initialized successfully.")
 
+# Define model initialization with detailed logging
 def initialize_models():
     try:
         logging.info("Initializing models...")
-        device = 'cuda'
+        
+        # Check for CUDA device
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        logging.info(f"Device set to: {device}")
         
         # Initialize SOM YOLO model
+        logging.info("Loading SOM YOLO model...")
         som_model = get_yolo_model(model_path='icon_detect/best.pt')
         som_model.to(device)
         logging.info("SOM YOLO model loaded and moved to device.")
         
-        # Initialize caption model (Florence2)
+        # Initialize caption model processor
+        logging.info("Initializing caption model processor...")
         caption_model_processor = get_caption_model_processor(
             model_name="florence2",
             model_name_or_path="icon_caption_florence",
             device=device
         )
-        logging.info("Caption model processor initialized.")
+        logging.info("Caption model processor initialized successfully.")
         
         return som_model, caption_model_processor
     except Exception as e:
         logging.error(f"Error initializing models: {str(e)}")
         raise
 
-# Initialize models at startup
-som_model, caption_model_processor = initialize_models()
+# Attempt to initialize models and log if successful
+try:
+    som_model, caption_model_processor = initialize_models()
+    logging.info("Model initialization complete.")
+except Exception as init_error:
+    print(f"Initialization Error: {init_error}")
+    logging.error(f"Critical error during model initialization: {init_error}")
+    raise
 
+# Define the image processing function with detailed logging
 def process_image(image_data, box_threshold=0.03):
     try:
         logging.info("Processing image data...")
@@ -95,9 +112,10 @@ def process_image(image_data, box_threshold=0.03):
         logging.error(f"Error processing image: {str(e)}")
         raise
 
+# Handler function for Runpod endpoint
 def handler(event):
     try:
-        logging.info("Handler invoked for image processing request.")
+        logging.info("Handler invoked with event data.")
         
         # Extract image data and parameters from the event
         image_data = event.get("input", {}).get("image")
@@ -107,7 +125,6 @@ def handler(event):
             logging.error("No image data found in request.")
             raise ValueError("Image data is required")
         
-        logging.info("Starting image processing...")
         # Process the image
         result = process_image(image_data, box_threshold)
         logging.info("Image processing completed successfully.")
@@ -118,6 +135,12 @@ def handler(event):
         logging.error(f"Error in handler: {str(e)}")
         return {"error": str(e)}
 
+# Main execution for Runpod serverless start
 if __name__ == "__main__":
-    logging.info("Starting Runpod serverless endpoint.")
-    runpod.serverless.start({"handler": handler})
+    try:
+        logging.info("Starting Runpod serverless endpoint.")
+        runpod.serverless.start({"handler": handler})
+    except Exception as main_error:
+        print(f"Startup Error: {main_error}")
+        logging.error(f"Error during Runpod serverless start: {main_error}")
+        raise
