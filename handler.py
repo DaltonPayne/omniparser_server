@@ -12,11 +12,13 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 def initialize_models():
     try:
+        logging.info("Initializing models...")
         device = 'cuda'
         
         # Initialize SOM YOLO model
         som_model = get_yolo_model(model_path='icon_detect/best.pt')
         som_model.to(device)
+        logging.info("SOM YOLO model loaded and moved to device.")
         
         # Initialize caption model (Florence2)
         caption_model_processor = get_caption_model_processor(
@@ -24,6 +26,7 @@ def initialize_models():
             model_name_or_path="icon_caption_florence",
             device=device
         )
+        logging.info("Caption model processor initialized.")
         
         return som_model, caption_model_processor
     except Exception as e:
@@ -35,12 +38,16 @@ som_model, caption_model_processor = initialize_models()
 
 def process_image(image_data, box_threshold=0.03):
     try:
+        logging.info("Processing image data...")
+        
         # Convert base64 to PIL Image
         image = Image.open(io.BytesIO(base64.b64decode(image_data))).convert('RGB')
+        logging.info("Image decoded and converted to RGB.")
         
         # Save temporary image for OCR processing
         temp_image_path = "/tmp/temp_image.png"
         image.save(temp_image_path)
+        logging.info(f"Temporary image saved at {temp_image_path} for OCR processing.")
         
         # Configure drawing settings
         draw_bbox_config = {
@@ -51,6 +58,7 @@ def process_image(image_data, box_threshold=0.03):
         }
         
         # Perform OCR
+        logging.info("Performing OCR...")
         ocr_bbox_rslt, is_goal_filtered = check_ocr_box(
             temp_image_path,
             display_img=False,
@@ -59,8 +67,10 @@ def process_image(image_data, box_threshold=0.03):
             easyocr_args={'paragraph': False, 'text_threshold': 0.9}
         )
         text, ocr_bbox = ocr_bbox_rslt
+        logging.info("OCR processing completed.")
         
         # Get labeled image and parsed content
+        logging.info("Getting labeled image and parsed content from SOM model...")
         labeled_img, label_coordinates, parsed_content_list = get_som_labeled_img(
             temp_image_path,
             som_model,
@@ -73,6 +83,7 @@ def process_image(image_data, box_threshold=0.03):
             use_local_semantics=True,
             iou_threshold=0.1
         )
+        logging.info("Labeled image and parsed content generated.")
         
         return {
             "labeled_image": labeled_img,  # Base64 encoded image
@@ -86,15 +97,20 @@ def process_image(image_data, box_threshold=0.03):
 
 def handler(event):
     try:
+        logging.info("Handler invoked for image processing request.")
+        
         # Extract image data and parameters from the event
         image_data = event.get("input", {}).get("image")
         box_threshold = event.get("input", {}).get("box_threshold", 0.03)
         
         if not image_data:
+            logging.error("No image data found in request.")
             raise ValueError("Image data is required")
         
+        logging.info("Starting image processing...")
         # Process the image
         result = process_image(image_data, box_threshold)
+        logging.info("Image processing completed successfully.")
         
         return {"output": result}
     
@@ -103,4 +119,5 @@ def handler(event):
         return {"error": str(e)}
 
 if __name__ == "__main__":
+    logging.info("Starting Runpod serverless endpoint.")
     runpod.serverless.start({"handler": handler})
