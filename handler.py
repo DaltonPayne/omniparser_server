@@ -15,13 +15,13 @@ def initialize_models():
         device = 'cuda'
         
         # Initialize SOM YOLO model
-        som_model = get_yolo_model(model_path='./icon_detect/best.pt')
+        som_model = get_yolo_model(model_path='icon_detect/best.pt')
         som_model.to(device)
         
         # Initialize caption model (Florence2)
         caption_model_processor = get_caption_model_processor(
             model_name="florence2",
-            model_name_or_path="../icon_caption_florence",
+            model_name_or_path="icon_caption_florence",
             device=device
         )
         
