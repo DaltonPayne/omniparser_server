@@ -9,172 +9,133 @@ import time
 import json
 import traceback
 import os
+import sys
 from datetime import datetime
 from utils import get_som_labeled_img, check_ocr_box, get_caption_model_processor
 
-# Configure logging with more detailed format
-log_format = '%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(funcName)s() - %(message)s'
-logging.basicConfig(
-    level=logging.INFO,
-    format=log_format,
-    handlers=[
-        logging.StreamHandler(),  # Console handler
-        logging.FileHandler('/tmp/serverless_endpoint.log')  # File handler
-    ]
-)
-logger = logging.getLogger(__name__)
+# Configure logging to output to both file and stdout with custom formatter
+class RunPodFormatter(logging.Formatter):
+    def format(self, record):
+        # Add timestamp and request_id if available
+        record.request_id = getattr(record, 'request_id', 'NO_REQ_ID')
+        return f"[{self.formatTime(record)}] [{record.request_id}] [{record.levelname}] {record.message}"
 
-# Add request ID tracking
-def generate_request_id():
-    return f"{int(time.time())}-{os.getpid()}-{hash(str(datetime.now()))}"
+# Configure logging
+logger = logging.getLogger("RunPodLogger")
+logger.setLevel(logging.INFO)
 
-def log_execution_time(func):
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        execution_time = end_time - start_time
-        logger.info(f"{func.__name__} executed in {execution_time:.2f} seconds")
-        return result
-    return wrapper
+# Console handler with custom formatter
+console_handler = logging.StreamHandler(sys.stdout)  # Use stdout for RunPod logs
+console_handler.setFormatter(RunPodFormatter())
+logger.addHandler(console_handler)
 
-def initialize_models():
-    try:
-        logger.info("Starting model initialization")
-        start_time = time.time()
-        
-        device = 'cuda'
-        logger.info(f"Using device: {device}")
-        
-        # Initialize SOM YOLO model
-        logger.info("Loading YOLO model")
-        som_model = get_yolo_model(model_path='icon_detect/best.pt')
-        som_model.to(device)
-        
-        # Initialize caption model (Florence2)
-        logger.info("Loading caption model and processor")
-        caption_model_processor = get_caption_model_processor(
-            model_name="florence2",
-            model_name_or_path="icon_caption_florence",
-            device=device
-        )
-        
-        end_time = time.time()
-        logger.info(f"Model initialization completed in {end_time - start_time:.2f} seconds")
-        
-        return som_model, caption_model_processor
-    except Exception as e:
-        logger.error(f"Critical error during model initialization: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise
+# File handler for persistent logs
+file_handler = logging.FileHandler('/tmp/serverless_endpoint.log')
+file_handler.setFormatter(RunPodFormatter())
+logger.addHandler(file_handler)
 
-@log_execution_time
-def process_image(image_data, box_threshold=0.03, request_id=None):
-    logger.info(f"[Request ID: {request_id}] Starting image processing with box_threshold={box_threshold}")
-    try:
-        # Log input image size
-        raw_image_size = len(image_data)
-        logger.info(f"[Request ID: {request_id}] Raw image data size: {raw_image_size} bytes")
+class RequestContext:
+    def __init__(self, request_id):
+        self.request_id = request_id
+        self.start_time = time.time()
         
-        # Convert base64 to PIL Image
-        image = Image.open(io.BytesIO(base64.b64decode(image_data))).convert('RGB')
-        logger.info(f"[Request ID: {request_id}] Image converted to RGB format: {image.size}")
-        
-        # Save temporary image for OCR processing
-        temp_image_path = f"/tmp/temp_image_{request_id}.png"
-        image.save(temp_image_path)
-        logger.info(f"[Request ID: {request_id}] Temporary image saved: {temp_image_path}")
-        
-        # Configure drawing settings
-        draw_bbox_config = {
-            'text_scale': 0.8,
-            'text_thickness': 2,
-            'text_padding': 3,
-            'thickness': 3,
+    def log(self, level, message):
+        """Helper method to log with request context"""
+        log_entry = {
+            'request_id': self.request_id,
+            'message': message,
+            'timestamp': datetime.now().isoformat()
         }
+        if level == 'ERROR':
+            logger.error(message, extra={'request_id': self.request_id})
+        else:
+            logger.info(message, extra={'request_id': self.request_id})
         
-        # Perform OCR
-        logger.info(f"[Request ID: {request_id}] Starting OCR processing")
-        ocr_bbox_rslt, is_goal_filtered = check_ocr_box(
-            temp_image_path,
-            display_img=False,
-            output_bb_format='xyxy',
-            goal_filtering=None,
-            easyocr_args={'paragraph': False, 'text_threshold': 0.9}
-        )
-        text, ocr_bbox = ocr_bbox_rslt
-        logger.info(f"[Request ID: {request_id}] OCR completed. Found {len(text)} text elements")
-        
-        # Get labeled image and parsed content
-        logger.info(f"[Request ID: {request_id}] Starting image labeling")
-        labeled_img, label_coordinates, parsed_content_list = get_som_labeled_img(
-            temp_image_path,
-            som_model,
-            BOX_TRESHOLD=box_threshold,
-            output_coord_in_ratio=False,
-            ocr_bbox=ocr_bbox,
-            draw_bbox_config=draw_bbox_config,
-            caption_model_processor=caption_model_processor,
-            ocr_text=text,
-            use_local_semantics=True,
-            iou_threshold=0.1
-        )
-        logger.info(f"[Request ID: {request_id}] Image labeling completed. Found {len(label_coordinates)} objects")
-        
-        # Clean up temporary file
-        try:
-            os.remove(temp_image_path)
-            logger.info(f"[Request ID: {request_id}] Temporary image removed")
-        except Exception as e:
-            logger.warning(f"[Request ID: {request_id}] Failed to remove temporary image: {str(e)}")
-        
-        return {
-            "labeled_image": labeled_img,
-            "coordinates": label_coordinates,
-            "parsed_content": parsed_content_list
-        }
-        
+    def __enter__(self):
+        self.log('INFO', f"Starting request processing")
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        duration = time.time() - self.start_time
+        if exc_type:
+            self.log('ERROR', f"Request failed after {duration:.2f}s: {str(exc_val)}")
+        else:
+            self.log('INFO', f"Request completed successfully in {duration:.2f}s")
+
+def check_cuda_availability():
+    """Verify CUDA setup and log device information"""
+    try:
+        if torch.cuda.is_available():
+            device_count = torch.cuda.device_count()
+            current_device = torch.cuda.current_device()
+            device_name = torch.cuda.get_device_name(current_device)
+            logger.info(f"CUDA is available: {device_count} device(s)", extra={'request_id': 'STARTUP'})
+            logger.info(f"Current CUDA device: {current_device} - {device_name}", extra={'request_id': 'STARTUP'})
+            
+            # Log CUDA memory information
+            total_memory = torch.cuda.get_device_properties(current_device).total_memory
+            allocated_memory = torch.cuda.memory_allocated(current_device)
+            logger.info(f"Total CUDA memory: {total_memory/1024**2:.2f}MB", extra={'request_id': 'STARTUP'})
+            logger.info(f"Initially allocated CUDA memory: {allocated_memory/1024**2:.2f}MB", extra={'request_id': 'STARTUP'})
+            return True
+        else:
+            logger.warning("CUDA is not available, falling back to CPU", extra={'request_id': 'STARTUP'})
+            return False
     except Exception as e:
-        logger.error(f"[Request ID: {request_id}] Error processing image: {str(e)}")
-        logger.error(f"[Request ID: {request_id}] Traceback: {traceback.format_exc()}")
-        raise
+        logger.error(f"Error checking CUDA availability: {str(e)}", extra={'request_id': 'STARTUP'})
+        return False
 
 def handler(event):
-    request_id = generate_request_id()
-    logger.info(f"[Request ID: {request_id}] New request received")
+    """RunPod handler function"""
+    request_id = f"req_{int(time.time())}_{os.getpid()}"
     
-    try:
-        # Log input event (excluding image data for size considerations)
-        event_log = event.copy()
-        if "input" in event_log and "image" in event_log["input"]:
-            event_log["input"]["image"] = f"<base64_image_{len(event_log['input']['image'])}bytes>"
-        logger.info(f"[Request ID: {request_id}] Event received: {json.dumps(event_log)}")
-        
-        # Extract image data and parameters
-        image_data = event.get("input", {}).get("image")
-        box_threshold = event.get("input", {}).get("box_threshold", 0.03)
-        
-        if not image_data:
-            logger.error(f"[Request ID: {request_id}] Missing required image data")
-            raise ValueError("Image data is required")
-        
-        # Process the image
-        logger.info(f"[Request ID: {request_id}] Processing image with box_threshold={box_threshold}")
-        result = process_image(image_data, box_threshold, request_id)
-        
-        logger.info(f"[Request ID: {request_id}] Processing completed successfully")
-        return {"output": result}
-    
-    except Exception as e:
-        logger.error(f"[Request ID: {request_id}] Error in handler: {str(e)}")
-        logger.error(f"[Request ID: {request_id}] Traceback: {traceback.format_exc()}")
-        return {"error": str(e)}
+    with RequestContext(request_id) as ctx:
+        try:
+            # Log input event (excluding image data)
+            event_log = event.copy()
+            if "input" in event_log and "image" in event_log["input"]:
+                event_log["input"]["image"] = f"<base64_image_{len(event_log['input']['image'])}bytes>"
+            ctx.log('INFO', f"Received event: {json.dumps(event_log)}")
+            
+            # Extract parameters
+            if "input" not in event:
+                raise ValueError("No input data provided")
+            
+            input_data = event["input"]
+            image_data = input_data.get("image")
+            box_threshold = input_data.get("box_threshold", 0.03)
+            
+            if not image_data:
+                raise ValueError("No image data provided")
+            
+            # Process image
+            ctx.log('INFO', f"Processing image with box_threshold={box_threshold}")
+            
+            # Log CUDA memory before processing
+            if torch.cuda.is_available():
+                allocated_before = torch.cuda.memory_allocated()
+                ctx.log('INFO', f"CUDA memory before processing: {allocated_before/1024**2:.2f}MB")
+            
+            result = process_image(image_data, box_threshold, request_id)
+            
+            # Log CUDA memory after processing
+            if torch.cuda.is_available():
+                allocated_after = torch.cuda.memory_allocated()
+                ctx.log('INFO', f"CUDA memory after processing: {allocated_after/1024**2:.2f}MB")
+            
+            return {"output": result}
+            
+        except Exception as e:
+            ctx.log('ERROR', f"Error processing request: {str(e)}")
+            ctx.log('ERROR', f"Traceback: {traceback.format_exc()}")
+            return {"error": str(e)}
 
 # Initialize models at startup
-logger.info("Initializing models at startup")
+logger.info("Starting serverless endpoint", extra={'request_id': 'STARTUP'})
+check_cuda_availability()
 som_model, caption_model_processor = initialize_models()
-logger.info("Models initialized successfully")
+logger.info("Models initialized successfully", extra={'request_id': 'STARTUP'})
 
 if __name__ == "__main__":
-    logger.info("Starting serverless endpoint")
+    logger.info("Starting RunPod serverless handler", extra={'request_id': 'STARTUP'})
     runpod.serverless.start({"handler": handler})
