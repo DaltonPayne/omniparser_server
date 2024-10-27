@@ -28,7 +28,7 @@ def initialize_models():
         
         # Initialize SOM YOLO model
         logging.info("Loading SOM YOLO model...")
-        som_model = get_yolo_model(model_path='icon_caption_blip2/icon_detect/best.pt')
+        som_model = get_yolo_model(model_path='best.pt')
         som_model.to(device)
         # Ensure model is in full precision
         som_model = som_model.float()
