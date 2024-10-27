@@ -34,14 +34,18 @@ def initialize_models():
         som_model = som_model.float()
         logging.info("SOM YOLO model loaded and moved to device.")
         
-        # Initialize caption model processor with explicit dtype
+        # Initialize caption model processor without dtype parameter
         logging.info("Initializing caption model processor...")
         caption_model_processor = get_caption_model_processor(
             model_name="florence2",
             model_name_or_path="icon_caption_florence",
-            device=device,
-            dtype=torch.float32  # Explicitly set dtype
+            device=device
         )
+        
+        # After getting the processor, try to ensure it uses float32
+        if hasattr(caption_model_processor, 'to'):
+            caption_model_processor = caption_model_processor.to(dtype=torch.float32)
+        
         logging.info("Caption model processor initialized successfully.")
         
         return som_model, caption_model_processor
