@@ -19,16 +19,23 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender-dev \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip and install essential packages
-RUN python3 -m pip install --upgrade pip \
-    && pip3 install --no-cache-dir \
+RUN python3 -m pip install --upgrade pip && \
+    pip3 install --no-cache-dir \
     torch \
     torchvision \
     ultralytics \
-    # Add any other specific dependencies here if required
-    && pip3 install --no-cache-dir pillow
+    dill \
+    runpod \
+    easyocr \
+    transformers \
+    supervision \
+    pillow \
+    numpy \
+    opencv-python-headless
 
 # Copy requirements and install application dependencies
 COPY requirements.txt /omniparser_server/
@@ -50,7 +57,7 @@ RUN python3 -c "import torch; print(f'PyTorch version: {torch.__version__}'); pr
 ENV PYTHONUNBUFFERED=1
 ENV CUDA_VISIBLE_DEVICES=0
 ENV PORT=8080
-ENV PYTHONPATH="${PYTHONPATH}:/omniparser_server"
+# ENV PYTHONPATH="${PYTHONPATH}:/omniparser_server"
 
 # Expose the required port for Runpod or other server access
 EXPOSE 8080
