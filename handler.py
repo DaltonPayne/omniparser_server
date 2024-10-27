@@ -21,9 +21,6 @@ def initialize_models():
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         logging.info(f"Device set to: {device}")
         
-        # Set default tensor type to float32
-        torch.set_default_tensor_type(torch.FloatTensor)
-        
         # Initialize YOLO model
         logging.info("Loading YOLO model...")
         som_model = get_yolo_model(model_path='best.pt')
@@ -31,13 +28,14 @@ def initialize_models():
         som_model = som_model.float()
         logging.info("YOLO model loaded and moved to device.")
         
-        # Initialize caption model processor
+        # Initialize caption model processor with explicit float32
         logging.info("Initializing caption model processor...")
-        caption_model_processor = get_caption_model_processor(
-            model_name="florence2",
-            model_name_or_path="icon_caption_florence",
-            device=device
-        )
+        with torch.cuda.amp.autocast(enabled=False):  # Disable automatic mixed precision
+            caption_model_processor = get_caption_model_processor(
+                model_name="florence2",
+                model_name_or_path="icon_caption_florence",
+                device=device
+            )
         logging.info("Caption model processor initialized successfully.")
         
         return som_model, caption_model_processor
