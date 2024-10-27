@@ -20,25 +20,27 @@ def initialize_models():
         logging.info("Initializing models...")
         
         # Check for CUDA device
-        device = 'cuda' # if torch.cuda.is_available() else 'cpu'
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
         logging.info(f"Device set to: {device}")
-        print(torch.cuda.is_available())
-        print(torch.cuda.current_device())
-        print(torch.cuda.get_device_name(torch.cuda.current_device()))
-
+        
+        # Set default tensor type to float32
+        torch.set_default_tensor_type(torch.FloatTensor)
         
         # Initialize SOM YOLO model
         logging.info("Loading SOM YOLO model...")
         som_model = get_yolo_model(model_path='icon_caption_blip2/icon_detect/best.pt')
         som_model.to(device)
+        # Ensure model is in full precision
+        som_model = som_model.float()
         logging.info("SOM YOLO model loaded and moved to device.")
         
-        # Initialize caption model processor
+        # Initialize caption model processor with explicit dtype
         logging.info("Initializing caption model processor...")
         caption_model_processor = get_caption_model_processor(
             model_name="florence2",
             model_name_or_path="icon_caption_florence",
-            device=device
+            device=device,
+            dtype=torch.float32  # Explicitly set dtype
         )
         logging.info("Caption model processor initialized successfully.")
         
