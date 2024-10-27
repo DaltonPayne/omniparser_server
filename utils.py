@@ -223,28 +223,67 @@ def annotate(image_source: np.ndarray, boxes: torch.Tensor, logits: torch.Tensor
 
     Parameters:
     image_source (np.ndarray): The source image to be annotated.
-    boxes (torch.Tensor): A tensor containing bounding box coordinates. in cxcywh format, pixel scale
+    boxes (torch.Tensor): A tensor containing bounding box coordinates in cxcywh format, pixel scale
     logits (torch.Tensor): A tensor containing confidence scores for each bounding box.
     phrases (List[str]): A list of labels for each bounding box.
-    text_scale (float): The scale of the text to be displayed. 0.8 for mobile/web, 0.3 for desktop # 0.4 for mind2web
-
-    Returns:
-    np.ndarray: The annotated image.
+    text_scale (float): The scale of the text to be displayed.
     """
     h, w, _ = image_source.shape
+    
+    # Convert boxes to numpy and ensure they're valid
+    if boxes is None or len(boxes) == 0:
+        return image_source.copy(), {}
+        
+    # Scale boxes if they're in normalized coordinates
     boxes = boxes * torch.Tensor([w, h, w, h])
-    xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy").numpy()
-    xywh = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xywh").numpy()
-    detections = sv.Detections(xyxy=xyxy)
+    
+    # Convert to xyxy format for detection
+    try:
+        xyxy = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xyxy")
+        if isinstance(xyxy, torch.Tensor):
+            xyxy = xyxy.numpy()
+    except Exception as e:
+        print(f"Error converting boxes: {e}")
+        return image_source.copy(), {}
 
-    labels = [f"{phrase}" for phrase in range(boxes.shape[0])]
+    # Convert to xywh format for return values
+    xywh = box_convert(boxes=boxes, in_fmt="cxcywh", out_fmt="xywh")
+    if isinstance(xywh, torch.Tensor):
+        xywh = xywh.numpy()
 
-    from util.box_annotator import BoxAnnotator 
-    box_annotator = BoxAnnotator(text_scale=text_scale, text_padding=text_padding,text_thickness=text_thickness,thickness=thickness) # 0.8 for mobile/web, 0.3 for desktop # 0.4 for mind2web
+    # Create detections object
+    detections = []
+    for box in xyxy:
+        if all(x is not None for x in box):  # Check for None values
+            detections.append(box.tolist() if isinstance(box, np.ndarray) else box)
+
+    # Create labels list
+    labels = [str(phrase) for phrase in phrases[:len(detections)]]
+
+    # Initialize box annotator
+    box_annotator = BoxAnnotator(
+        text_scale=text_scale,
+        text_padding=text_padding,
+        text_thickness=text_thickness,
+        thickness=thickness
+    )
+
+    # Annotate the image
     annotated_frame = image_source.copy()
-    annotated_frame = box_annotator.annotate(scene=annotated_frame, detections=detections, labels=labels, image_size=(w,h))
+    if detections:
+        annotated_frame = box_annotator.annotate(
+            scene=annotated_frame,
+            detections=detections,
+            labels=labels
+        )
 
-    label_coordinates = {f"{phrase}": v for phrase, v in zip(phrases, xywh)}
+    # Create label coordinates dictionary
+    label_coordinates = {
+        str(phrase): coords 
+        for phrase, coords in zip(phrases, xywh) 
+        if all(x is not None for x in coords)
+    }
+
     return annotated_frame, label_coordinates
 
 
@@ -399,4 +438,144 @@ def check_ocr_box(image_path, display_img = True, output_bb_format='xywh', goal_
     return (text, bb), is_goal_filtered
 
 
+import cv2
+import numpy as np
+from typing import List, Tuple, Union, Optional
 
+class Colors:
+    def __init__(self):
+        hex_colors = [
+            "#FF3838", "#FF9D97", "#FF701F", "#FFB21D", "#CFD231", "#48F90A",
+            "#92CC17", "#3DDB86", "#1A9334", "#00D4BB", "#2C99A8", "#00C2FF",
+            "#344593", "#6473FF", "#0018EC", "#8438FF", "#520085", "#CB38FF"
+        ]
+        self.palette = [self._hex2rgb(c) for c in hex_colors]
+        self.n = len(self.palette)
+
+    def _hex2rgb(self, h: str) -> Tuple[int, int, int]:
+        return tuple(int(h[1 + i:1 + i + 2], 16) for i in (0, 2, 4))
+
+    def __call__(self, i: int) -> Tuple[int, int, int]:
+        return self.palette[i % self.n]
+
+class BoxAnnotator:
+    def __init__(
+        self,
+        color: Union[Tuple[int, int, int], Colors] = Colors(),
+        thickness: int = 2,
+        text_thickness: int = 2,
+        text_scale: float = 0.5,
+        text_padding: int = 10,
+        text_color: Tuple[int, int, int] = (255, 255, 255)
+    ):
+        self.color = color
+        self.thickness = thickness
+        self.text_thickness = text_thickness
+        self.text_scale = text_scale
+        self.text_padding = text_padding
+        self.text_color = text_color
+
+    def _validate_detection(self, detection: Tuple) -> bool:
+        """
+        Validates that a detection tuple contains valid coordinates.
+        """
+        if detection is None or len(detection) < 4:
+            return False
+        return all(x is not None and isinstance(x, (int, float)) for x in detection[:4])
+
+    def annotate(
+        self,
+        scene: np.ndarray,
+        detections: List[Optional[Tuple]],
+        labels: Optional[List[str]] = None,
+        image_size: Optional[Tuple[int, int]] = None,
+        skip_label: bool = False
+    ) -> np.ndarray:
+        """
+        Annotates the scene with bounding boxes and labels.
+        
+        Args:
+            scene: The image to annotate
+            detections: List of detections, each in format (x1, y1, x2, y2, score)
+            labels: List of labels corresponding to each detection
+            image_size: Optional tuple of (width, height) to scale coordinates
+            skip_label: If True, don't draw labels
+        """
+        if scene is None:
+            raise ValueError("Scene cannot be None")
+            
+        frame = scene.copy()
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        # Scale coordinates if image_size is provided
+        if image_size:
+            scale_w, scale_h = image_size[0] / frame.shape[1], image_size[1] / frame.shape[0]
+        else:
+            scale_w, scale_h = 1.0, 1.0
+        
+        valid_detections = []
+        valid_labels = []
+        
+        # First, validate all detections and labels
+        for i, detection in enumerate(detections or []):
+            if self._validate_detection(detection):
+                valid_detections.append(detection)
+                if labels and i < len(labels):
+                    valid_labels.append(labels[i])
+                elif labels:
+                    valid_labels.append("")
+        
+        # Now process only valid detections
+        for i, detection in enumerate(valid_detections):
+            try:
+                x1, y1, x2, y2 = map(float, detection[:4])
+                
+                # Scale coordinates
+                x1, y1, x2, y2 = map(int, [
+                    x1 * scale_w,
+                    y1 * scale_h,
+                    x2 * scale_w,
+                    y2 * scale_h
+                ])
+                
+                # Get color for this detection
+                color = self.color(i) if isinstance(self.color, Colors) else self.color
+                
+                # Draw bounding box
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, self.thickness)
+                
+                # Draw label if provided and not skipped
+                if valid_labels and i < len(valid_labels) and not skip_label:
+                    text = str(valid_labels[i])
+                    
+                    # Get text size
+                    (text_width, text_height), baseline = cv2.getTextSize(
+                        text, font, self.text_scale, self.text_thickness
+                    )
+                    
+                    # Calculate text background rectangle
+                    padding = self.text_padding
+                    text_x1 = x1
+                    text_y1 = y1 - text_height - padding
+                    text_x2 = x1 + text_width + padding
+                    text_y2 = y1
+                    
+                    # Ensure the text background stays within the image
+                    text_y1 = max(text_y1, 0)
+                    if text_y1 == 0:
+                        text_y2 = text_height + padding
+                    
+                    # Draw text background
+                    cv2.rectangle(frame, (text_x1, text_y1), (text_x2, text_y2), color, -1)
+                    
+                    # Draw text
+                    cv2.putText(
+                        frame, text,
+                        (x1 + padding // 2, y1 - padding // 2),
+                        font, self.text_scale, self.text_color, self.text_thickness
+                    )
+            except (TypeError, ValueError, IndexError) as e:
+                print(f"Warning: Failed to process detection {i}: {e}")
+                continue
+        
+        return frame
