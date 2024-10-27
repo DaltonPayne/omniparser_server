@@ -6,7 +6,7 @@ easyocr
 opencv-python-headless
 numpy
 supervision
-Pillow
+pillow
 matplotlib
 requests
 openai
@@ -14,3 +14,4 @@ base64io
 transformers
 timm
 einops
+dill
