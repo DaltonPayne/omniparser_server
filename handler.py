@@ -6,7 +6,8 @@ import base64
 import io
 import logging
 import os
-from utils import get_som_labeled_img, check_ocr_box, get_caption_model_processor, get_yolo_model
+from utils import check_ocr_box, get_caption_model_processor, get_yolo_model
+from torchvision.ops import box_convert
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -19,19 +20,16 @@ def initialize_models():
         # Check for CUDA device
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         logging.info(f"Device set to: {device}")
-        print(f"CUDA available: {torch.cuda.is_available()}")
-        if torch.cuda.is_available():
-            print(f"CUDA device: {torch.cuda.get_device_name(0)}")
         
         # Set default tensor type to float32
         torch.set_default_tensor_type(torch.FloatTensor)
         
-        # Initialize SOM YOLO model
-        logging.info("Loading SOM YOLO model...")
+        # Initialize YOLO model
+        logging.info("Loading YOLO model...")
         som_model = get_yolo_model(model_path='best.pt')
         som_model.to(device)
         som_model = som_model.float()
-        logging.info("SOM YOLO model loaded and moved to device.")
+        logging.info("YOLO model loaded and moved to device.")
         
         # Initialize caption model processor
         logging.info("Initializing caption model processor...")
@@ -40,10 +38,6 @@ def initialize_models():
             model_name_or_path="icon_caption_florence",
             device=device
         )
-        
-        if hasattr(caption_model_processor, 'to'):
-            caption_model_processor = caption_model_processor.to(dtype=torch.float32)
-        
         logging.info("Caption model processor initialized successfully.")
         
         return som_model, caption_model_processor
@@ -62,69 +56,101 @@ def process_image(image_data, som_model, caption_model_processor, box_threshold=
         temp_image_path = "/tmp/temp_image.png"
         image = Image.open(io.BytesIO(base64.b64decode(image_data))).convert('RGB')
         image.save(temp_image_path)
-        logging.info("Image decoded and saved for processing.")
         
-        # Configure drawing settings
-        draw_bbox_config = {
-            'text_scale': 0.8,
-            'text_thickness': 2,
-            'text_padding': 3,
-            'thickness': 3,
-        }
+        # Get image dimensions
+        w, h = image.size
         
         # Perform OCR
         logging.info("Performing OCR...")
-        ocr_bbox_rslt, is_goal_filtered = check_ocr_box(
+        ocr_result, _ = check_ocr_box(
             temp_image_path,
             display_img=False,
             output_bb_format='xyxy',
             goal_filtering=None,
             easyocr_args={'paragraph': False, 'text_threshold': 0.9}
         )
-        text, ocr_bbox = ocr_bbox_rslt
-        logging.info("OCR processing completed.")
-        logging.info(f"Detected text: {text}")
+        ocr_text, ocr_boxes = ocr_result
         
-        # Get labeled image and parsed content
-        logging.info("Getting labeled image and parsed content from SOM model...")
-        labeled_img, label_coordinates, parsed_content_list = get_som_labeled_img(
-            temp_image_path,
-            som_model,
-            BOX_TRESHOLD=box_threshold,
-            output_coord_in_ratio=False,
-            ocr_bbox=ocr_bbox,
-            draw_bbox_config=draw_bbox_config,
-            caption_model_processor=caption_model_processor,
-            ocr_text=text,
-            use_local_semantics=True,
-            iou_threshold=0.1
+        # Perform YOLO detection
+        logging.info("Performing YOLO detection...")
+        results = som_model.predict(
+            source=temp_image_path,
+            conf=box_threshold,
         )
-        logging.info("Labeled image and parsed content generated.")
         
-        # Save the labeled image
-        output_path = '/tmp/output_labeled.png'
-        if isinstance(labeled_img, str):  # If it's base64
-            img_data = base64.b64decode(labeled_img)
-            with open(output_path, 'wb') as f:
-                f.write(img_data)
-        else:  # If it's a PIL Image
-            labeled_img.save(output_path)
+        # Extract boxes and convert to proper format
+        yolo_boxes = results[0].boxes.xyxy.cpu()
         
-        # Read the output image back as base64
-        with open(output_path, 'rb') as f:
-            output_image_base64 = base64.b64encode(f.read()).decode('ascii')
+        # Convert coordinates to normalized format
+        normalized_yolo_boxes = yolo_boxes / torch.tensor([w, h, w, h])
         
-        logging.info(f"Labeled image processed")
-        logging.info(f"Detected coordinates: {label_coordinates}")
-        logging.info(f"Parsed content: {parsed_content_list}")
+        # Process OCR boxes to match format
+        normalized_ocr_boxes = []
+        for box in ocr_boxes:
+            norm_box = [
+                box[0] / w,  # x1
+                box[1] / h,  # y1
+                box[2] / w,  # x2
+                box[3] / h   # y2
+            ]
+            normalized_ocr_boxes.append(norm_box)
+        
+        # Get icon captions
+        icon_boxes = normalized_yolo_boxes.tolist()
+        icon_descriptions = []
+        
+        for i, box in enumerate(icon_boxes):
+            # Extract region
+            x1, y1, x2, y2 = [int(coord * (w if i % 2 == 0 else h)) for i, coord in enumerate(box)]
+            icon_image = image.crop((x1, y1, x2, y2))
+            
+            # Get caption
+            inputs = caption_model_processor['processor'](
+                images=icon_image, 
+                text="<CAPTION>", 
+                return_tensors="pt"
+            ).to(caption_model_processor['model'].device)
+            
+            outputs = caption_model_processor['model'].generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=inputs["pixel_values"],
+                max_new_tokens=128
+            )
+            
+            caption = caption_model_processor['processor'].batch_decode(
+                outputs, 
+                skip_special_tokens=True
+            )[0].strip()
+            
+            icon_descriptions.append(caption)
+        
+        # Combine results
+        elements = []
+        
+        # Add OCR text elements
+        for i, (box, text) in enumerate(zip(normalized_ocr_boxes, ocr_text)):
+            elements.append({
+                "type": "text",
+                "id": f"text_{i}",
+                "coordinates": box,
+                "content": text
+            })
+        
+        # Add icon elements
+        for i, (box, desc) in enumerate(zip(icon_boxes, icon_descriptions)):
+            elements.append({
+                "type": "icon",
+                "id": f"icon_{i}",
+                "coordinates": box,
+                "content": desc
+            })
         
         return {
-            "labeled_image": output_image_base64,
-            "labeled_image_path": output_path,
-            "coordinates": label_coordinates,
-            "parsed_content": parsed_content_list,
-            "detected_text": text,
-            "ocr_boxes": ocr_bbox
+            "elements": elements,
+            "image_size": {
+                "width": w,
+                "height": h
+            }
         }
         
     except Exception as e:
@@ -134,8 +160,6 @@ def process_image(image_data, som_model, caption_model_processor, box_threshold=
         # Cleanup temporary files
         if os.path.exists(temp_image_path):
             os.remove(temp_image_path)
-        if os.path.exists(output_path):
-            os.remove(output_path)
 
 # Initialize models globally
 try:
@@ -158,7 +182,7 @@ def handler(event):
             logging.error("No image data found in request.")
             raise ValueError("Image data is required")
         
-        # Process the image using the global models
+        # Process the image
         result = process_image(image_data, som_model, caption_model_processor, box_threshold)
         logging.info("Image processing completed successfully.")
         
